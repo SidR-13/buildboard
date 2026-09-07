@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     github_token: str = ""
     jwt_secret: str = ""
-    ai_mock: bool = True
+    ai_mock: bool = True  # defaults on so a fresh checkout can never bill the Claude API by accident
     claude_model: str = "claude-haiku-4-5-20251001"
 
     class Config:

@@ -24,6 +24,8 @@ services:
     env_file:
       - .env
     environment:
+      # Overrides the .env value, which points at localhost for host-run dev. Inside the compose
+      # network another container is reachable by service name, never on localhost.
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/buildboard
     ports:
       - "8000:8000"

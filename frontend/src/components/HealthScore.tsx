@@ -10,6 +10,7 @@ export function HealthScore({ score }: { score: number | null }) {
   return (
     <div className={`flex h-11 w-11 items-center justify-center rounded-full ${bg}`}>
       <span className={`font-mono text-sm font-semibold ${text}`}>
+        {/* "—" not 0: preserves the backend's no-data-vs-unhealthy distinction */}
         {score === null ? '—' : Math.round(score)}
       </span>
     </div>

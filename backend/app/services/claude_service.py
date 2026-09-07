@@ -30,6 +30,7 @@ def _mock_analysis(logs_snippet: str) -> dict:
 
 
 def analyze_failure(workflow_name: str, branch: str, commit_sha: str, logs_snippet: str) -> dict:
+    # Checked before the client is even constructed, so a placeholder dev key can't reach the network.
     if settings.ai_mock:
         return _mock_analysis(logs_snippet)
 
@@ -39,6 +40,8 @@ def analyze_failure(workflow_name: str, branch: str, commit_sha: str, logs_snipp
         model=settings.claude_model,
         max_tokens=1024,
         tools=[_ANALYSIS_TOOL],
+        # Forcing the tool call makes the API guarantee the response shape, instead of
+        # asking for JSON in the prompt and hoping the text parses.
         tool_choice={"type": "tool", "name": "report_failure_analysis"},
         messages=[
             {

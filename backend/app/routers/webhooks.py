@@ -24,6 +24,8 @@ def _generate_failure_analysis(
     branch: str,
     commit_sha: str,
 ) -> None:
+    # GitHub redelivers webhooks it considers timed out; without this guard that would
+    # mean a second paid Claude call for a run we already analysed.
     existing = db.query(FailureAnalysis).filter(FailureAnalysis.run_id == run_id).first()
     if existing is not None:
         return
@@ -62,6 +64,8 @@ def _store_workflow_run(db: Session, payload: dict) -> tuple[Repo, WorkflowRun]:
         db.add(repo)
         db.flush()
 
+    # GitHub sends three deliveries per run (requested / in_progress / completed).
+    # Keying on github_run_id and updating in place collapses all three into one row.
     run = (
         db.query(WorkflowRun)
         .filter(WorkflowRun.github_run_id == run_data["id"])
@@ -105,6 +109,8 @@ async def receive_github_webhook(
     if x_github_event == "workflow_run":
         repo, run = _store_workflow_run(db, payload)
 
+        # Awaited inline: broadcasting to already-open local sockets is fast in-process I/O,
+        # unlike the log fetch and Claude call below, which GitHub shouldn't wait on.
         await manager.broadcast(
             repo.id,
             {

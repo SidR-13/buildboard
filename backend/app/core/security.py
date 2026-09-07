@@ -12,4 +12,5 @@ def verify_github_signature(payload_body: bytes, signature_header: str | None, s
         digestmod=hashlib.sha256,
     ).hexdigest()
 
+    # compare_digest, not ==: constant-time, so a timing side channel can't leak the secret
     return hmac.compare_digest(expected_signature, signature_header)

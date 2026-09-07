@@ -1,3 +1,6 @@
+# Platform is pinned in the FROM rather than passed at build time on purpose: this image only
+# ever runs on one x86_64 EC2 host, and building it on an arm64 Mac must not produce an arm image.
+# Docker's linter flags this as non-portable, which is right in general and wrong for this deploy.
 FROM --platform=linux/amd64 python:3.11-slim AS builder
 WORKDIR /app
 COPY requirements.txt .

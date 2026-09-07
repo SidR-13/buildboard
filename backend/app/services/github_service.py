@@ -23,4 +23,6 @@ def fetch_run_logs(owner: str, repo: str, github_run_id: int, tail_lines: int = 
                 text = archive.read(name).decode("utf-8", errors="replace")
                 all_lines.extend(text.splitlines())
 
+    # Tail only: cheaper and faster, but mainly because thousands of lines of setup noise
+    # dilute the actual error for the model as much as they do for a human.
     return "\n".join(all_lines[-tail_lines:])

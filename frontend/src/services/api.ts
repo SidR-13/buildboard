@@ -30,6 +30,8 @@ export async function fetchRunAnalysis(runId: string): Promise<FailureAnalysis |
     const res = await client.get<FailureAnalysis>(`/runs/${runId}/analysis`)
     return res.data
   } catch (err) {
+    // 404 is expected, not an error: analysis is generated in a background task after the
+    // failure webhook, so it legitimately doesn't exist yet for a just-failed run.
     if (axios.isAxiosError(err) && err.response?.status === 404) return null
     throw err
   }

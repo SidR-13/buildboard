@@ -70,6 +70,8 @@ export function RepoDetail() {
     const msg = data as RunUpdateMessage
     if (msg.event !== 'run_update') return
 
+    // Upsert on id: the broadcast payload (see webhooks.py) omits started_at/completed_at, so
+    // spreading it over the existing row keeps those, and unseen ids are prepended as newest.
     setRuns((prev) => {
       const incoming = msg.run
       if (!prev) {

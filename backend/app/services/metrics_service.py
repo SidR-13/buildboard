@@ -15,6 +15,8 @@ def calculate_pass_rate(db: Session, repo_id: UUID, days: int = 30) -> dict:
         .filter(
             WorkflowRun.repo_id == repo_id,
             WorkflowRun.conclusion.isnot(None),
+            # Dropped from the denominator too, not just the numerator: a run that never
+            # ran to completion wasn't tested, so counting it as a failure would be wrong.
             WorkflowRun.conclusion.notin_(["cancelled", "skipped"]),
             WorkflowRun.completed_at >= since,
         )
@@ -25,6 +27,8 @@ def calculate_pass_rate(db: Session, repo_id: UUID, days: int = 30) -> dict:
     total = sum(count for _, count in counts)
     successes = sum(count for conclusion, count in counts if conclusion == "success")
 
+    # None rather than 0, so "no data yet" stays distinguishable from "everything failed"
+    # all the way to the UI.
     if total == 0:
         return {"pass_rate": None, "total_runs": 0, "successful_runs": 0}
 
@@ -36,6 +40,8 @@ def calculate_pass_rate(db: Session, repo_id: UUID, days: int = 30) -> dict:
 
 
 def _average_duration_between(db: Session, repo_id: UUID, start: datetime, end: datetime) -> float | None:
+    # Successes only. Failure durations are bimodal - seconds for a syntax error, many minutes
+    # for a flaky integration test - so mixing them in would not describe a typical build.
     return (
         db.query(func.avg(WorkflowRun.duration_seconds))
         .filter(
@@ -71,6 +77,9 @@ def calculate_health_score(db: Session, repo_id: UUID, days: int = 30) -> dict:
     current_avg = _average_duration_between(db, repo_id, current_start, now)
     previous_avg = _average_duration_between(db, repo_id, previous_start, current_start)
 
+    # The penalty is a trend (this window vs the one before it), not an absolute time threshold,
+    # and caps at 20 points so pass rate stays dominant: a slowdown can make a green repo look
+    # "healthy but slower", never broken.
     duration_penalty = 0.0
     if current_avg is not None and previous_avg is not None and previous_avg > 0 and current_avg > previous_avg:
         pct_increase = ((current_avg - previous_avg) / previous_avg) * 100
@@ -81,6 +90,10 @@ def calculate_health_score(db: Session, repo_id: UUID, days: int = 30) -> dict:
     return {"health_score": health_score, **pass_rate_data}
 
 
+# A commit is flaky if the same (branch, sha) produced both a success and a failure.
+# KNOWN LIMITATION: GitHub's "re-run failed jobs" reuses the same github_run_id, and the webhook
+# handler updates that row in place, so the original failure is overwritten before this query ever
+# sees both conclusions. Only genuinely separate runs over one commit are caught here.
 def detect_flaky_builds(db: Session, repo_id: UUID, days: int = 30) -> dict:
     since = datetime.utcnow() - timedelta(days=days)
 
