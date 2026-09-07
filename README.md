@@ -17,7 +17,7 @@ polling, no refresh button.
 **Live:** [buildboard-siddhesh.duckdns.org](https://buildboard-siddhesh.duckdns.org)
 
 ### Contents
-[Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering decisions](#engineering-decisions) · [Tech stack](#tech-stack) · [Running locally](#running-locally) · [API](#api)
+[Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering log](#engineering-log) · [Tech stack](#tech-stack) · [Running locally](#running-locally) · [API](#api)
 
 ---
 
@@ -94,157 +94,152 @@ flowchart TD
 
 ---
 
-## Engineering decisions
+## Engineering log
 
-These are the parts that don't show up in a screenshot — the tradeoffs I
-actually made and why, not the tradeoffs a tutorial would tell you to make.
+I built this with an AI pair-programmer (Claude) doing a lot of the typing
+and a fair amount of the debugging legwork — that's disclosed here, not
+hidden, because it's an honest description of how the code got written.
+What it didn't do is make the calls: every tradeoff below is one I decided,
+usually after being walked through the options, sometimes after rejecting
+the AI's first take. The entries are in build order, kept to the ones that
+actually involved a decision or a real bug, not a changelog of every file
+touched.
 
-### Webhook ingestion
-GitHub signs every webhook payload with HMAC-SHA256 over the raw request
-body. The signature is verified with `hmac.compare_digest` — a
-constant-time comparison — before the payload is trusted at all, so a
-timing attack can't be used to guess the secret byte by byte.
+**Webhook lifecycle → one row, not three.**
+GitHub sends three separate deliveries per workflow run —
+`requested` → `in_progress` → `completed` — not one. First instinct was to
+store each as its own row; decided against it once I realized that's not
+"history," it's the same run's status flickering three times in the table.
+Handler now finds-or-creates a single row keyed on GitHub's `run_id` and
+updates it in place, so a run has one identity through its whole lifecycle.
+Signature verification (HMAC-SHA256, `hmac.compare_digest` — constant-time,
+so timing can't leak the secret) went in from the first version, not bolted
+on after; an unauthenticated webhook endpoint accepting arbitrary POSTs
+wasn't a version I wanted to ship even for a portfolio project.
 
-GitHub also sends **three separate deliveries per run** (`requested` →
-`in_progress` → `completed`). Rather than treating those as three events,
-the handler finds-or-creates a single `WorkflowRun` row keyed on GitHub's
-`run_id` and updates it in place — so a run's row shows its live status
-through its whole lifecycle instead of producing duplicate rows.
+**Health score: fought the urge to pick an arbitrary "slow" threshold.**
+First draft docked points for any build over some fixed number of seconds.
+Killed it before writing it — a monorepo's test suite and a one-file lint
+check have nothing in common, so any fixed threshold is just a number I
+made up. Landed on scoring build duration by *trend* (this window vs. the
+prior one) instead, capped at a 20-point penalty so a flaky-slow week can
+soften a passing score but never make a healthy repo read as broken.
+Pass/fail rate stays the dominant signal on purpose.
 
-### Health score
-```
-health_score = pass_rate − duration_penalty
-```
-Pass rate excludes cancelled/skipped runs from both sides of the ratio —
-those were never actually tested to completion, so counting them as
-failures would punish a repo for someone hitting cancel, not for broken
-code.
+**Flaky-build detection: shipped a known gap instead of over-building.**
+Detection groups runs by `(branch, commit_sha)` and flags any group with
+both a success and a failure — same commit, two outcomes, most likely
+non-determinism. Then found the real gap: GitHub's "re-run failed jobs"
+reuses the same `run_id`, and my webhook handler updates that row in place
+(the same design decision from the first entry), so a re-run silently
+overwrites the original failure before detection ever sees both outcomes.
+Fixing it properly means storing `run_attempt` and inserting a new row per
+attempt — a real schema change. I explicitly asked myself whether I was
+overcomplicating the project chasing a metric that doesn't even appear in
+the interview pitch, decided the answer was yes, and documented the
+limitation instead of building around it. I'd make the opposite call on a
+system other engineers actually relied on.
 
-The duration penalty is scored by **trend**, not an absolute threshold:
-current window's average build time vs. the prior equal-length window.
-There's no universal "slow" — a monorepo's test suite and a one-file lint
-check have nothing in common — so an absolute cutoff would be arbitrary.
-The penalty is capped at 20 points, because pass/fail is the real
-broken-vs-working signal; a worsening duration trend should make a
-100%-passing repo look "healthy but slower," never make it look broken.
+**A GitHub PAT that "existed" but didn't work.**
+Claude API log-fetching returned 401s on the first real test. My check had
+confirmed `GITHUB_TOKEN` was *set* in `.env` — it just so happened to still
+be the literal placeholder string from `.env.example`, and I'd read
+"present" as "valid" without actually looking at the value. Confirmed the
+real cause by running the same request with `gh`'s own token side-by-side
+and watching it succeed where mine failed. Fix was a fresh, narrowly-scoped
+fine-grained PAT (read-only, one repo) — kept deliberately separate from
+`gh`'s own broader token rather than reusing it.
 
-A repo with zero data in the window returns `null`, not `0` — "no data
-yet" and "unhealthy" are different states and the UI treats them
-differently (an em dash vs. a red badge), not the same defaulted number.
+**A debug print that "didn't run" — until stdout buffering did.**
+Building the WebSocket connection registry, I added temporary print
+statements to watch it from inside the running process (a separate script
+can't see another process's memory). First run: nothing printed, despite
+the code clearly executing on every other check I ran. Root cause was
+Python block-buffering stdout once it's piped to a file, not a logic bug —
+fixed by confirming with `flush=True`, then removed the debug prints and
+explicitly re-ran the full test against the *cleaned-up* code, because
+"it worked before I removed the prints" isn't the same claim.
 
-### Flaky build detection
-Runs are grouped by `(branch, commit_sha)`; a group containing both a
-`success` and a `failure` conclusion gets flagged. The reasoning: if the
-exact same commit produced both outcomes with no code change in between,
-non-determinism is the most likely explanation, not a bug that got fixed
-mid-flight.
+**Proved the container networking story instead of asserting it.**
+Docker container-to-container traffic goes over the service name, not
+`localhost` — I knew that going in, but the compose file's `DATABASE_URL`
+still pointed at `localhost:5432` (correct for host-run dev, wrong from
+inside a container). Rather than just fixing it and moving on, I exec'd
+into the running backend container and manually attempted a raw socket
+connection to `localhost:5432` from inside it, watched it fail with
+`Connection refused`, then resolved the service-name hostname to confirm
+where the real listener was. Wanted the explanation to survive being
+asked "how do you know," not just sound right.
 
-**Known limitation, left in on purpose:** GitHub's "re-run failed jobs"
-reuses the same `run_id`, and the webhook handler updates that row in
-place (by design — see above) — so the original failure gets silently
-overwritten by the re-run's success before flaky detection ever sees two
-conclusions for the same row. Catching that would mean storing
-`run_attempt` and inserting a new row per attempt instead of updating in
-place — a real schema change I chose not to make, because flaky detection
-is a secondary metric and re-architecting the run-storage model to catch
-a footnote wasn't worth the time against everything else left to build.
-I'd make that call differently if this were a system other engineers
-depended on.
+**Least-privilege IAM meant hitting real walls, on purpose.**
+The AWS CLI identity for this project has EC2/RDS/ECR permissions and
+nothing else — deliberately, not `AdministratorAccess`. That choice has a
+cost: creating the EC2 instance's IAM role hit an access-denied wall
+(a scoped-down identity can't grant IAM permissions, including to itself),
+so that one step had to go through the AWS console under the account
+owner instead of the CLI. Then attaching the finished role to the instance
+hit a *second*, different wall — `iam:PassRole`, a separate AWS guardrail
+against using a role to escalate your own privileges — fixed with one
+narrow inline grant scoped to that single role's ARN, not IAM broadly. Two
+walls in a row is annoying to debug through; it's also exactly what
+least-privilege is supposed to do, and I'd rather hit it while building
+than not have it at all.
 
-### Claude integration
-The failure analysis needs two independent fields — root cause and
-suggested fix — stored in two separate database columns. Prompting for
-JSON and parsing the response is fragile (the model can wrap it in prose,
-use inconsistent keys, or just get it wrong). Instead, the call uses
-**forced tool-use**: a JSON Schema tool definition with both fields
-required, and `tool_choice` forcing the model to call it. The API
-guarantees the shape — there's no regex, no "did it actually return valid
-JSON this time."
+**The project didn't have a real GitHub repo — until CI/CD needed one.**
+Batches 0 through 10 existed only as local files; only a disposable test
+fixture had ever been pushed to GitHub. Starting the CI/CD pipeline meant
+starting with `git init`, a `.gitignore` for a nested test-fixture repo,
+and a private `SidR-13/buildboard` repo — infrastructure work the batch
+plan didn't call out, discovered by trying to write a workflow file and
+having nowhere to put it.
 
-Only the **last 50 lines** of logs are sent, for two reasons that aren't
-just "tokens cost money": CI logs are mostly setup noise and the actual
-error is almost always at the tail, and burying 10 relevant lines inside
-thousands of lines of successful output dilutes the signal for the model
-itself, not just the bill.
+**OIDC trust denied — diagnosed by reading the actual token, not the docs.**
+Wired up GitHub Actions to assume an AWS role via OIDC so no AWS keys
+would live in repo secrets. It failed with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity` even though the trust policy visually
+matched every OIDC tutorial's example. Instead of guessing, I added a
+throwaway workflow step that fetched GitHub's real ID token and decoded
+its JWT payload to stdout. That showed the actual cause: GitHub now embeds
+immutable owner/repo IDs in the `sub` claim by default —
+`repo:owner@id/repo@id:ref:...` — a format no tutorial assumes because it's
+newer than most of them. Fixed with a wildcard match in the trust policy,
+then deleted the debug step once confirmed.
 
-Every code path checks an `AI_MOCK` flag *before* constructing the
-Anthropic client, so a placeholder API key during development can never
-trigger a real network call by accident. Mock responses are prefixed
-`[MOCK]` in both fields, so mocked output can never be mistaken for a
-real one downstream.
+**A security group correctly blocked my own deploy — didn't weaken it to fix that.**
+The deploy step's first version SSH'd into EC2, and failed with a TCP
+timeout. Root cause: the EC2 security group intentionally locks port 22 to
+my own IP, and GitHub's hosted runners connect from rotating ranges — the
+firewall was doing exactly its job. The easy fix was opening port 22 to
+the internet; I didn't take it. Pivoted the whole deploy step to AWS
+Systems Manager instead — `ssm:SendCommand` runs the deploy script over an
+authenticated AWS API call through the instance's own IAM role, so port 22
+never has to open at all. More moving parts, but the security posture I'd
+already decided on stayed intact instead of getting quietly walked back
+under deadline pressure.
 
-### Background work vs. inline work
-Fetching logs and calling Claude happen in a `BackgroundTasks` job — the
-webhook handler responds to GitHub immediately and does the slow work
-after. GitHub expects a timely response; blocking on two external API
-calls risks the delivery being marked failed. WebSocket broadcasts, by
-contrast, are awaited inline — the distinguishing question is "is this
-slow/external," not "is this async," and broadcasting to already-open
-local connections is fast in-process I/O.
+**Blue-green over "restart with extra steps."**
+The batch plan called for a "zero-downtime rolling update" on a single
+free-tier EC2 instance — no load balancer, no second server. Restart-based
+deploys would have a real (if brief) gap where the site is down; I decided
+that didn't actually satisfy the requirement, even though it's the fastest
+thing to build. Went with an actual blue-green swap instead: the new
+container starts on a spare port, gets health-checked against `/health`
+— checking the database connection specifically, not just a 200 — and
+only then does Nginx flip traffic to it with a graceful reload. A failed
+health check aborts and leaves the current version live; a bad image
+can't take the site down.
 
-The background task is also guarded against **duplicate webhook
-deliveries** (GitHub redelivers on suspected timeout): it checks for an
-existing `FailureAnalysis` row for the run before doing any work, so a
-redelivered event can't trigger a second paid API call or a duplicate row.
-
-### Real-time layer
-A single in-process `ConnectionManager` keyed by `repo_id` holds active
-WebSocket connections and broadcasts only to viewers of the relevant repo.
-This is deliberately in-memory and single-instance — correct for this
-project's actual deployment shape (one EC2 instance, no load balancer),
-but it's a real scaling limit I'd swap for Redis pub/sub if this ever ran
-behind more than one backend instance.
-
-### Containerization
-The Dockerfile is a multi-stage build: dependencies install via `pip
-install --user` in a builder stage, and only the installed packages plus
-application code get copied into the final image — not the build cache.
-Every `FROM` is pinned to `--platform=linux/amd64` unconditionally, which
-Docker's own linter flags as non-portable — correct in general, but wrong
-advice here: this image only ever runs on one target (an x86_64 EC2
-instance), built from an Apple Silicon Mac where Docker would otherwise
-silently emulate the wrong architecture and only fail once deployed.
-
-### Infrastructure & IAM
-Everything on AWS runs under a purpose-scoped IAM identity, not
-`AdministratorAccess` — a CLI user with EC2/RDS/ECR permissions only, and
-a separate EC2 instance role (ECR read-only) so the server can pull
-images without any credential file stored on disk. RDS accepts
-connections only from the EC2 security group, never the public internet.
-Least-privilege isn't free: it meant hitting real permission walls while
-building this (see below) and working around them deliberately instead
-of reaching for broader access.
-
-### CI/CD pipeline
-On push to `main`, GitHub Actions builds the image, pushes to ECR, and
-deploys — with two constraints that shaped the whole pipeline:
-
-- **No long-lived AWS credentials in GitHub.** The workflow assumes an
-  IAM role via OIDC — a short-lived token scoped to exactly
-  `repo:this-repo:ref:refs/heads/main` — instead of static access keys
-  sitting in repo secrets.
-- **No open SSH port.** The EC2 security group locks port 22 to one IP
-  (mine), which GitHub's hosted runners can't satisfy since they connect
-  from rotating IP ranges. Rather than opening SSH to the internet, the
-  deploy step runs the deploy script via `aws ssm send-command` — an
-  authenticated AWS API call through the instance's own IAM role, with no
-  inbound port exposed at all.
-
-Deploys themselves are a **real blue-green swap**, not a restart with a
-fancier name: the new container starts on a spare port, gets health-
-checked against `/health` — checking the database connection
-specifically, not just a 200 — and only then does Nginx flip traffic to
-it with a graceful reload (in-flight requests finish against the old
-upstream instead of being dropped). A failed health check aborts,
-deletes the bad container, and leaves the currently-live version
-untouched — a broken image can't take the site down.
-
-Two real bugs surfaced building this and are worth naming rather than
-glossing over: GitHub's OIDC tokens now embed immutable owner/repo IDs in
-the `sub` claim by default (`repo:owner@id/repo@id:...`), which broke the
-trust policy every OIDC tutorial assumes and needed a wildcard match
-instead of an exact one; and the SSH-vs-SSM pivot above was diagnosed by
-watching the actual TCP timeout, not guessed at from documentation.
+**Shipped the real Claude output, not the mock, in the README.**
+Writing this file, the failure-analysis screenshot showed `[MOCK] Build
+failed - AI_MOCK=true, no real analysis performed` — accurate for local
+dev, but it undersells the actual feature to anyone reading this. Rather
+than pass it off as-is, I flipped `AI_MOCK` off locally for exactly one
+real Claude call against a real failed build, captured that, and flipped
+it back — the $1.50 project budget accounted for demo-purpose calls like
+this from the start. Same standard applied to the dashboard screenshot: it
+had one real repo in it and looked sparse, so I registered a second real
+GitHub repo with its own webhook and build history rather than fake a
+fuller-looking dashboard.
 
 ---
 
