@@ -20,7 +20,7 @@ UI shown below currently runs locally against it (see
 [Limitations](#limitations--path-to-scale)).
 
 ### Contents
-[Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering log](#engineering-log) · [Limitations](#limitations--path-to-scale) · [Tech stack](#tech-stack) · [Running locally](#running-locally) · [API](#api)
+[Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering log](#engineering-log) · [Limitations](#limitations--path-to-scale) · [Tech stack](#tech-stack) · [AWS infrastructure](#aws-infrastructure) · [Running locally](#running-locally) · [API](#api)
 
 ---
 
@@ -339,6 +339,32 @@ hard way.
 | Containers | Docker, multi-stage builds | Identical artifact from a laptop to production |
 | Infra | AWS EC2, RDS, ECR, Nginx, Let's Encrypt | Free-tier-covered, no managed services that cost money idle (ELB, NAT Gateway explicitly avoided) |
 | CI/CD | GitHub Actions, OIDC, AWS SSM | No long-lived credentials anywhere in the pipeline |
+
+## AWS infrastructure
+
+Every AWS service here is doing a specific job, not just "because AWS" —
+this is what's actually running and the alternative each choice was made
+over.
+
+| Service | Used for | Why this, not the alternative |
+|---|---|---|
+| **EC2** (t2.micro) | Runs the backend container | Needed one long-lived process holding an in-memory WebSocket connection registry (see [Engineering log](#engineering-log)) — Lambda would mean either a stateless-WebSocket workaround via API Gateway + an external store, or paying for infrastructure this project doesn't need at its actual scale. One always-on free-tier instance is simpler and free for 12 months. |
+| **RDS** (db.t3.micro, PostgreSQL) | Production database | Managed backups and patching over a self-hosted Postgres container — the tradeoff a solo operator should take, since "I'll remember to back it up" isn't a real backup strategy. Multi-AZ / read replicas explicitly skipped (see [Limitations](#limitations--path-to-scale)) — real cost for redundancy this project's traffic doesn't justify yet. |
+| **ECR** | Private Docker image registry | Integrates with IAM directly — no separate registry credentials to manage or leak. Images are tagged by commit SHA, not just `:latest`, so a bad deploy has an exact rollback target. |
+| **IAM** — three separate identities | Access control | A CLI user scoped to EC2/RDS/ECR only (not `AdministratorAccess`); a separate EC2 instance role, ECR-read-only, so the server can pull images with zero credential files on disk; a separate GitHub Actions OIDC role, trusted only for this repo's `main` branch, permissioned for ECR push + one SSM command on one instance. None of the three can do what the other two can — a compromised GitHub Actions run can't touch RDS, and a compromised EC2 instance can't push new images to ECR. |
+| **Security groups** | Network boundary | EC2: port 22 open only to one IP (mine), 80/443 public. RDS: port 5432 open only to EC2's security group — never the public internet. Modeled as service-to-service trust, not "anything on the VPC can reach the database." |
+| **Systems Manager (SSM)** | Runs the deploy script on EC2 | Chosen specifically so port 22 could stay locked to one IP — GitHub's hosted runners connect from rotating ranges that a single-IP rule can't allow-list. `ssm:SendCommand` runs the deploy over an authenticated AWS API call through the instance's own IAM role instead, so there's no SSH key in GitHub Actions and no open port for it to use anyway. |
+| **Elastic IP** | Stable public address | EC2's default public IP changes on stop/start; DNS (below) needs something fixed to point at. |
+| **Nginx + Let's Encrypt (Certbot)** | TLS termination, reverse proxy | Free HTTPS, and one config file handles both the WebSocket upgrade headers and the HTTP→HTTPS redirect. An ALB + ACM certificate would do the same job for ~$16/month this project doesn't need to spend. |
+| **DuckDNS** | Domain name | Let's Encrypt can't issue a certificate for a bare IP — that's a protocol rule, not an AWS limitation. A free dynamic-DNS hostname was enough; buying a domain wasn't. |
+| **CloudWatch billing alarm** | Spend safety net | Set up *before* any other AWS resource existed, on a personal card — cheap insurance against a misconfiguration running up a bill overnight. |
+
+**Deliberately not used:** an Elastic Load Balancer and a NAT Gateway
+(~$16/mo and ~$32/mo respectively, for redundancy/networking this single-
+instance project doesn't have a use for) and ElastiCache — Redis is
+provisioned in the app's config but never actually wired in (see
+[Limitations](#limitations--path-to-scale)), so paying for a managed Redis
+instance nobody calls would be pure waste.
 
 ---
 
