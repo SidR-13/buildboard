@@ -54,21 +54,15 @@ def _average_duration_between(db: Session, repo_id: UUID, start: datetime, end: 
     )
 
 
-def calculate_average_duration(db: Session, repo_id: UUID, days: int = 30) -> dict:
-    now = datetime.utcnow()
-    avg_seconds = _average_duration_between(db, repo_id, now - timedelta(days=days), now)
-
-    return {
-        "avg_duration_seconds": round(avg_seconds, 1) if avg_seconds is not None else None,
-    }
-
-
 def calculate_health_score(db: Session, repo_id: UUID, days: int = 30) -> dict:
+    # Also returns avg_duration_seconds (computed as a side effect of the trend check below)
+    # rather than making the caller run calculate_average_duration too - same window, same
+    # query, no reason to hit the database for it twice on every /metrics request.
     pass_rate_data = calculate_pass_rate(db, repo_id, days)
     pass_rate = pass_rate_data["pass_rate"]
 
     if pass_rate is None:
-        return {"health_score": None, **pass_rate_data}
+        return {"health_score": None, "avg_duration_seconds": None, **pass_rate_data}
 
     now = datetime.utcnow()
     current_start = now - timedelta(days=days)
@@ -91,8 +85,9 @@ def calculate_health_score(db: Session, repo_id: UUID, days: int = 30) -> dict:
         duration_penalty = min(20.0, pct_increase)
 
     health_score = round(max(0.0, pass_rate - duration_penalty), 1)
+    avg_duration_seconds = round(current_avg, 1) if current_avg is not None else None
 
-    return {"health_score": health_score, **pass_rate_data}
+    return {"health_score": health_score, "avg_duration_seconds": avg_duration_seconds, **pass_rate_data}
 
 
 # A commit is flaky if the same (branch, sha) produced both a success and a failure.

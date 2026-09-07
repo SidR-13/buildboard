@@ -72,9 +72,19 @@ export function RepoDetail() {
 
   useEffect(() => {
     if (!repoId) return
+    // Guards against a slow fetch for a previous repoId resolving after the user has
+    // already navigated to a different repo and overwriting the newer one's state.
+    let cancelled = false
     fetchRepoRuns(repoId)
-      .then(setRuns)
-      .catch(() => setError('Could not load build history for this repo.'))
+      .then((r) => {
+        if (!cancelled) setRuns(r)
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load build history for this repo.')
+      })
+    return () => {
+      cancelled = true
+    }
   }, [repoId])
 
   const wsUrl = repoId ? `${import.meta.env.VITE_WS_URL}/ws/${repoId}` : null

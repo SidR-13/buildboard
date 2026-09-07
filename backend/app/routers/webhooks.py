@@ -30,7 +30,11 @@ def _generate_failure_analysis(
     if existing is not None:
         return
 
-    logs_snippet = fetch_run_logs(owner, repo_name, github_run_id)
+    # Checked here too, not just inside analyze_failure: fetch_run_logs is a real GitHub
+    # API call, and AI_MOCK is meant to mean "no external calls in dev," not just "no
+    # Claude calls" - without this, a placeholder GITHUB_TOKEN 401s before mock mode
+    # ever gets a chance to short-circuit anything.
+    logs_snippet = fetch_run_logs(owner, repo_name, github_run_id) if not settings.ai_mock else ""
     analysis = analyze_failure(workflow_name, branch, commit_sha, logs_snippet)
 
     failure = FailureAnalysis(
@@ -70,6 +74,12 @@ def _store_workflow_run(db: Session, payload: dict) -> tuple[Repo, WorkflowRun]:
     if run is None:
         run = WorkflowRun(repo_id=repo.id, github_run_id=run_data["id"])
         db.add(run)
+    elif run.status == "completed" and run_data["status"] != "completed":
+        # A late/redelivered earlier-stage delivery arriving after this run already
+        # finished - GitHub doesn't guarantee delivery order. Applying it would revert
+        # status to e.g. "in_progress" while completed_at/duration_seconds stay set,
+        # so skip it rather than un-finish a run that's already done.
+        return repo, run
 
     run.workflow_name = run_data["name"]
     run.branch = run_data["head_branch"]
@@ -97,6 +107,11 @@ async def receive_github_webhook(
 ):
     raw_body = await request.body()
 
+    # Verified against the one global secret, not Repo.webhook_secret, deliberately: the
+    # signature has to be checked on the raw body before it's trusted enough to parse and
+    # find out which repo it claims to be from, so a per-repo secret isn't reachable yet
+    # at this point. Repo.webhook_secret is populated from this same value at creation -
+    # it isn't independently configurable today.
     if not verify_github_signature(raw_body, x_hub_signature_256, settings.github_webhook_secret):
         raise HTTPException(status_code=401, detail="Invalid signature")
 

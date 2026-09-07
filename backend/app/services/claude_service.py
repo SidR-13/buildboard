@@ -58,5 +58,9 @@ def analyze_failure(workflow_name: str, branch: str, commit_sha: str, logs_snipp
         ],
     )
 
-    tool_use_block = next(block for block in message.content if block.type == "tool_use")
+    tool_use_block = next((block for block in message.content if block.type == "tool_use"), None)
+    if tool_use_block is None:
+        # tool_choice forces this in the normal case; a response cut short (e.g. hitting
+        # max_tokens before the tool call completes) is the one way it can still be absent.
+        raise ValueError(f"Claude response had no tool_use block (stop_reason={message.stop_reason})")
     return tool_use_block.input

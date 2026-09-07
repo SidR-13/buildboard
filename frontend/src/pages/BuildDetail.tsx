@@ -16,14 +16,25 @@ export function BuildDetail() {
 
   useEffect(() => {
     if (!runId) return
+    // Guards against a slow fetch for a previous runId resolving after the user has
+    // already navigated to a different build and overwriting the newer one's state.
+    let cancelled = false
     fetchRun(runId)
       .then((r) => {
+        if (cancelled) return
         setRun(r)
         if (r.conclusion === 'failure') {
-          fetchRunAnalysis(runId).then(setAnalysis)
+          fetchRunAnalysis(runId).then((a) => {
+            if (!cancelled) setAnalysis(a)
+          })
         }
       })
-      .catch(() => setError('Could not load this build.'))
+      .catch(() => {
+        if (!cancelled) setError('Could not load this build.')
+      })
+    return () => {
+      cancelled = true
+    }
   }, [runId])
 
   return (

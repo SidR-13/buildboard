@@ -23,8 +23,19 @@ class ConnectionManager:
                 del self.active_connections[repo_id]
 
     async def broadcast(self, repo_id: UUID, message: dict) -> None:
+        # A dead connection here (client closed, server hasn't noticed yet) must not raise
+        # and abort the loop - that would both skip every remaining viewer of this repo and,
+        # since this is awaited before the webhook handler schedules the failure-analysis
+        # background task, silently prevent that task from ever being scheduled at all.
+        dead: list[WebSocket] = []
         for connection in self.active_connections.get(repo_id, []):
-            await connection.send_json(message)
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.append(connection)
+
+        for connection in dead:
+            self.disconnect(repo_id, connection)
 
 
 manager = ConnectionManager()
