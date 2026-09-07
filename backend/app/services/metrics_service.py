@@ -81,7 +81,12 @@ def calculate_health_score(db: Session, repo_id: UUID, days: int = 30) -> dict:
     # and caps at 20 points so pass rate stays dominant: a slowdown can make a green repo look
     # "healthy but slower", never broken.
     duration_penalty = 0.0
-    if current_avg is not None and previous_avg is not None and previous_avg > 0 and current_avg > previous_avg:
+    if (
+        current_avg is not None
+        and previous_avg is not None
+        and previous_avg > 0
+        and current_avg > previous_avg
+    ):
         pct_increase = ((current_avg - previous_avg) / previous_avg) * 100
         duration_penalty = min(20.0, pct_increase)
 

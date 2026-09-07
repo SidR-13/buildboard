@@ -66,11 +66,7 @@ def _store_workflow_run(db: Session, payload: dict) -> tuple[Repo, WorkflowRun]:
 
     # GitHub sends three deliveries per run (requested / in_progress / completed).
     # Keying on github_run_id and updating in place collapses all three into one row.
-    run = (
-        db.query(WorkflowRun)
-        .filter(WorkflowRun.github_run_id == run_data["id"])
-        .first()
-    )
+    run = db.query(WorkflowRun).filter(WorkflowRun.github_run_id == run_data["id"]).first()
     if run is None:
         run = WorkflowRun(repo_id=repo.id, github_run_id=run_data["id"])
         db.add(run)

@@ -1,0 +1,4 @@
+# Development-only tooling. Not installed in the Docker image or needed at runtime.
+#   pip install -r requirements-dev.txt
+#   ruff format app/ && ruff check app/     (config lives in pyproject.toml)
+ruff==0.16.6

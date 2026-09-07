@@ -35,9 +35,7 @@ def get_run_analysis(run_id: UUID, db: Session = Depends(get_db)):
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    analysis = (
-        db.query(FailureAnalysis).filter(FailureAnalysis.run_id == run_id).first()
-    )
+    analysis = db.query(FailureAnalysis).filter(FailureAnalysis.run_id == run_id).first()
     if analysis is None:
         raise HTTPException(status_code=404, detail="No analysis for this run")
 

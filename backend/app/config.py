@@ -3,10 +3,12 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str
+    # Provisioned, not yet wired into anything - see "Limitations & path to scale" in the README.
     redis_url: str
     anthropic_api_key: str = ""
     github_webhook_secret: str = ""
     github_token: str = ""
+    # Provisioned, not yet wired into anything - see "Limitations & path to scale" in the README.
     jwt_secret: str = ""
     ai_mock: bool = True  # defaults on so a fresh checkout can never bill the Claude API by accident
     claude_model: str = "claude-haiku-4-5-20251001"

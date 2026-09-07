@@ -20,9 +20,7 @@ export function RepoCard({ repo, metrics }: { repo: Repo; metrics: RepoMetrics |
         <span>
           Pass rate{' '}
           <span className="font-mono text-text">
-            {metrics?.pass_rate !== null && metrics?.pass_rate !== undefined
-              ? `${Math.round(metrics.pass_rate)}%`
-              : '—'}
+            {metrics?.pass_rate != null ? `${Math.round(metrics.pass_rate)}%` : '—'}
           </span>
         </span>
         <span>

@@ -39,12 +39,24 @@ const chartColors = {
   failure: '#f87171',
 }
 
-function ChartTooltip({ active, payload, label }: any) {
+// Recharts injects these into whatever element is passed as <Tooltip content={...} />,
+// so every prop is optional from this component's point of view.
+interface ChartTooltipProps {
+  active?: boolean
+  label?: string | number
+  payload?: {
+    dataKey?: string | number
+    name?: string | number
+    value?: string | number
+  }[]
+}
+
+function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
   if (!active || !payload?.length) return null
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2 text-xs shadow-lg">
       <p className="font-mono text-text-dim">{label}</p>
-      {payload.map((p: any) => (
+      {payload.map((p) => (
         <p key={p.dataKey} className="font-mono text-text">
           {p.name}: {p.value}
         </p>

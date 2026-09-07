@@ -22,7 +22,7 @@ _ANALYSIS_TOOL = {
 }
 
 
-def _mock_analysis(logs_snippet: str) -> dict:
+def _mock_analysis() -> dict:
     return {
         "root_cause": "[MOCK] Build failed - AI_MOCK=true, no real analysis performed.",
         "suggested_fix": "[MOCK] Set AI_MOCK=false and provide a real ANTHROPIC_API_KEY to get a real fix.",
@@ -32,7 +32,7 @@ def _mock_analysis(logs_snippet: str) -> dict:
 def analyze_failure(workflow_name: str, branch: str, commit_sha: str, logs_snippet: str) -> dict:
     # Checked before the client is even constructed, so a placeholder dev key can't reach the network.
     if settings.ai_mock:
-        return _mock_analysis(logs_snippet)
+        return _mock_analysis()
 
     client = Anthropic(api_key=settings.anthropic_api_key)
 
