@@ -1,12 +1,23 @@
 # BuildBoard
 
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?style=flat-square&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-multi--stage-2496ED?style=flat-square&logo=docker&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-EC2%20%7C%20RDS%20%7C%20ECR-232F3E?style=flat-square&logo=amazonaws&logoColor=white)
+![Claude](https://img.shields.io/badge/Claude%20API-tool--use-D97757?style=flat-square)
+
 A self-hosted CI/CD monitoring platform: it ingests GitHub Actions webhook
 events, computes build health metrics, uses Claude to explain *why* a build
 failed, and pushes all of it to a live dashboard over WebSockets — no
 polling, no refresh button.
 
 **Live:** [buildboard-siddhesh.duckdns.org](https://buildboard-siddhesh.duckdns.org)
-· **Stack:** FastAPI · PostgreSQL · React/TypeScript · Docker · AWS (EC2/RDS/ECR) · Claude API
+
+### Contents
+[Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering decisions](#engineering-decisions) · [Tech stack](#tech-stack) · [Running locally](#running-locally) · [API](#api)
 
 ---
 
@@ -27,6 +38,15 @@ signed webhooks, an async API, a real-time layer, a third-party LLM
 integration, containerization, and a CI/CD pipeline that deploys itself.
 Every piece is there because the system needed it, not because it looked
 good on a list.
+
+## Live update demo
+
+A commit lands on GitHub, Actions runs it, and the dashboard updates itself
+— no reload. This is a real webhook round-trip, not a simulated animation:
+a build history row and both charts pick up the new run the moment the
+backend broadcasts it over WebSocket.
+
+![Live update demo](docs/screenshots/demo-live-update.gif)
 
 ## Screenshots
 
