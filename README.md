@@ -14,10 +14,13 @@ events, computes build health metrics, uses Claude to explain *why* a build
 failed, and pushes all of it to a live dashboard over WebSockets — no
 polling, no refresh button.
 
-**Live:** [buildboard-siddhesh.duckdns.org](https://buildboard-siddhesh.duckdns.org)
+**Live API:** [buildboard-siddhesh.duckdns.org/health](https://buildboard-siddhesh.duckdns.org/health)
+— the backend runs in production on real AWS infrastructure; the dashboard
+UI shown below currently runs locally against it (see
+[Limitations](#limitations--path-to-scale)).
 
 ### Contents
-[Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering log](#engineering-log) · [Tech stack](#tech-stack) · [Running locally](#running-locally) · [API](#api)
+[Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering log](#engineering-log) · [Limitations](#limitations--path-to-scale) · [Tech stack](#tech-stack) · [Running locally](#running-locally) · [API](#api)
 
 ---
 
@@ -240,6 +243,86 @@ this from the start. Same standard applied to the dashboard screenshot: it
 had one real repo in it and looked sparse, so I registered a second real
 GitHub repo with its own webhook and build history rather than fake a
 fuller-looking dashboard.
+
+---
+
+## Limitations & path to scale
+
+This is a solid single-service vertical slice, built and operated by one
+person — it is not what a team-run version of this would look like. Listed
+roughly in the order each would actually bite:
+
+**Frontend isn't deployed.** Nginx on the production box proxies to the
+API only; the dashboard in every screenshot above runs against a local
+backend. Fix is mechanical — build the Vite app, serve it as static files
+from the same Nginx (or S3 + CloudFront) — just not done yet because the
+backend and the pipeline that deploys it were the priority for this
+project's scope.
+
+**No automated tests.** Every feature in this README was verified by hand
+against real webhook data — real verification, but not repeatable, and it
+doesn't gate anything in CI. A team-run version needs `pytest` coverage on
+the metrics math (health score, flaky detection) and the webhook
+signature/idempotency logic at minimum, wired into the GitHub Actions
+workflow as a check the image has to pass before it's even built.
+
+**No authentication.** Every endpoint and the dashboard are open to
+anyone with the URL. `JWT_SECRET` is already sitting in the env file —
+provisioned, never wired into anything. Real multi-tenant use needs actual
+user accounts and repo-level access control, not just an API key bolted
+onto an otherwise-open API.
+
+**In-memory WebSocket registry, single instance only.** Covered in the
+engineering log above: the connection registry lives in one process's
+memory, which only works because this runs on exactly one EC2 instance
+with no load balancer. Two backend instances would each hold half the
+connections with no way to know about builds routed to the other — the
+standard fix is Redis pub/sub, publish on webhook, every instance
+subscribes and fans out to its own local connections.
+
+**Metrics are recomputed live, with no caching and no indexes.** `REDIS_URL`
+is defined in config and never actually used — health score and pass rate
+are a fresh SQL aggregation on every dashboard load, over tables with no
+indexes beyond the primary key. Fine at today's data volume; years of
+build history would need an index on `(repo_id, started_at)` at minimum,
+plus caching computed metrics with invalidation on new webhook events
+instead of recomputing per request.
+
+**`BackgroundTasks` isn't a task queue.** Claude analysis and log fetching
+run in-process via FastAPI's `BackgroundTasks` — no retry on failure, no
+persistence if the process restarts mid-task, and no scaling independent
+of the web server. A real deployment moves this to Celery/RQ/SQS, so a
+burst of failing builds doesn't compete with the API for the same
+process's CPU, and a crashed analysis job doesn't just silently disappear.
+
+**No rate limiting on the webhook endpoint.** HMAC verification stops
+forged payloads, not volume — a misconfigured sender could still hit
+`/webhooks/github` as fast as it wants. Needs a rate limiter, or ingestion
+moved behind a queue (SQS) so bursts queue instead of loading the API
+directly.
+
+**Secrets live in a `.env` file on the instance**, not a managed secret
+store. Works for one server updated by hand; a team needs AWS Secrets
+Manager or Parameter Store for rotation and an audit trail instead of a
+file someone has to remember to update.
+
+**No observability beyond a billing alarm.** The only alarm in this
+project watches AWS spend, not application health — no structured logs
+shipped anywhere queryable, no error tracking, no alerting on webhook
+processing failures, failed deploys, or Claude API errors. This could run
+unattended for a demo; it couldn't run unattended for a team.
+
+**Deploy targets one hardcoded instance, not a fleet.** The CI/CD
+pipeline's SSM command names one specific EC2 instance ID. Fine for a
+single free-tier box; real scale-out replaces the blue-green-on-one-box
+script with an ECS/EKS rolling deployment or an ASG behind a load
+balancer — which would also require fixing the in-memory WebSocket
+registry above first, since a fleet can't share one process's memory.
+
+None of these are things I didn't think of — they're the parts I
+consciously deferred to keep this project's scope realistic for one person
+to actually finish, documented instead of left for someone to discover the
+hard way.
 
 ---
 
