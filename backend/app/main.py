@@ -15,11 +15,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(webhooks.router)
-app.include_router(metrics.router)
-app.include_router(repos.router)
-app.include_router(runs.router)
-app.include_router(ws.router)
+# /api, not root: the frontend's client-side routes (e.g. /runs/:runId) and this API's
+# resource paths (e.g. GET /runs/{id}) are otherwise identical shapes once both are served
+# from the same domain - Nginx can't tell "give me the page" from "give me the JSON" for
+# the same URL. /health stays unprefixed (see main.py below) since nothing in the frontend
+# ever routes to /health, so it can't collide.
+app.include_router(webhooks.router, prefix="/api")
+app.include_router(metrics.router, prefix="/api")
+app.include_router(repos.router, prefix="/api")
+app.include_router(runs.router, prefix="/api")
+app.include_router(ws.router, prefix="/api")
 
 
 @app.get("/health")
