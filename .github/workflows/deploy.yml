@@ -1,18 +1,55 @@
-name: Deploy Backend
+name: Deploy
 
 on:
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - ".github/workflows/deploy.yml"
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  build-and-deploy:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # No third-party paths-filter action - the whole diff is one grep over a
+      # single git command, not worth a dependency for. Full history (fetch-depth 0)
+      # because github.event.before can be arbitrarily far back for a multi-commit
+      # push, and all-zeros on a branch's very first push - diff against the empty
+      # tree in that case so a first push still deploys instead of erroring.
+      - name: Detect changed paths
+        id: filter
+        run: |
+          BEFORE="${{ github.event.before }}"
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE=$(git hash-object -t tree /dev/null)
+          fi
+          CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}")
+          echo "$CHANGED"
+
+          if echo "$CHANGED" | grep -qE '^(backend/|\.github/workflows/deploy\.yml)'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -qE '^(frontend/|\.github/workflows/deploy\.yml)'; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy-backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -76,5 +113,74 @@ jobs:
 
           if [ "$STATUS" != "Success" ]; then
             echo "Deploy failed with status: $STATUS"
+            exit 1
+          fi
+
+  deploy-frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_API_URL: https://buildboard-siddhesh.duckdns.org/api
+          VITE_WS_URL: wss://buildboard-siddhesh.duckdns.org/api
+        run: npm run build
+
+      - name: Assume AWS role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::834287106965:role/buildboard-gha-role
+          aws-region: us-east-1
+
+      - name: Upload build to S3
+        run: aws s3 sync frontend/dist s3://buildboard-frontend-deploy --delete
+
+      - name: Sync onto EC2 via SSM
+        env:
+          INSTANCE_ID: i-0079fa054800c0e67
+        run: |
+          PARAMS=$(jq -n '{commands: ["/home/ec2-user/deploy-frontend.sh"]}')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "$PARAMS" \
+            --query "Command.CommandId" --output text)
+          echo "SSM command id: $COMMAND_ID"
+
+          STATUS="Pending"
+          for i in $(seq 1 30); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --query "Status" --output text 2>/dev/null || echo "Pending")
+            if [[ "$STATUS" != "Pending" && "$STATUS" != "InProgress" && "$STATUS" != "Delayed" ]]; then
+              break
+            fi
+            sleep 5
+          done
+
+          echo "----- deploy-frontend.sh stdout -----"
+          aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" --output text
+          echo "----- deploy-frontend.sh stderr -----"
+          aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+            --query "StandardErrorContent" --output text
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "Frontend deploy failed with status: $STATUS"
             exit 1
           fi
