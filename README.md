@@ -14,10 +14,11 @@ events, computes build health metrics, uses Claude to explain *why* a build
 failed, and pushes all of it to a live dashboard over WebSockets — no
 polling, no refresh button.
 
-**Live API:** [buildboard-siddhesh.duckdns.org/health](https://buildboard-siddhesh.duckdns.org/health)
-— the backend runs in production on real AWS infrastructure; the dashboard
-UI shown below currently runs locally against it (see
-[Limitations](#limitations--path-to-scale)).
+**Live:** [buildboard-siddhesh.duckdns.org](https://buildboard-siddhesh.duckdns.org)
+— the real deployment. It'll show "No repos yet" since no GitHub repo's
+webhook currently points at production (the screenshots and demo below are
+from a local instance with real accumulated build history instead, so
+there's something to actually look at).
 
 ### Contents
 [Why I built this](#why-i-built-this) · [Demo](#live-update-demo) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Engineering log](#engineering-log) · [Limitations](#limitations--path-to-scale) · [Tech stack](#tech-stack) · [AWS infrastructure](#aws-infrastructure) · [Running locally](#running-locally) · [API](#api)
@@ -244,6 +245,24 @@ had one real repo in it and looked sparse, so I registered a second real
 GitHub repo with its own webhook and build history rather than fake a
 fuller-looking dashboard.
 
+**Deploying the frontend surfaced a routing collision I hadn't hit yet.**
+Building the Vite app and pointing Nginx at the static files seemed
+mechanical — until I actually laid out the routes side by side. The
+frontend's client-side route `/runs/:runId` and the backend's
+`GET /runs/{id}` are the *same URL* once both are served from one domain:
+one should return the SPA shell, the other a JSON body, and Nginx has no
+way to tell those two intentions apart for an identical path. Considered
+disambiguating by request `Accept` header — fragile, and it wouldn't hold
+up if a browser tab was ever refreshed directly on a build-detail page.
+Instead namespaced the entire API under `/api` (a small, mechanical
+change to the route registration, not a redesign) and gave Nginx three
+unambiguous rules: `/api/*` proxies to the backend, `/health` proxies too
+(nothing in the frontend ever routes there, so it stays put), and
+everything else falls through to the SPA with a `try_files ... /index.html`
+fallback so a direct load or refresh on `/repos/:id` still works. Tested
+the exact failure mode this fixes — a hard refresh on a deep link — before
+calling it done, not just the happy path from `/`.
+
 ---
 
 ## Limitations & path to scale
@@ -252,12 +271,13 @@ This is a solid single-service vertical slice, built and operated by one
 person — it is not what a team-run version of this would look like. Listed
 roughly in the order each would actually bite:
 
-**Frontend isn't deployed.** Nginx on the production box proxies to the
-API only; the dashboard in every screenshot above runs against a local
-backend. Fix is mechanical — build the Vite app, serve it as static files
-from the same Nginx (or S3 + CloudFront) — just not done yet because the
-backend and the pipeline that deploys it were the priority for this
-project's scope.
+**Frontend deploy isn't automated.** The dashboard is live (see the top of
+this README), but getting it there was a manual `npm run build` + `scp`,
+not a step in the CI/CD pipeline — only backend changes trigger a deploy
+today. The mechanical parts (build, upload, swap the files under Nginx)
+are exactly the kind of thing that belongs in `deploy.yml` alongside the
+backend job; not done yet because backend automation was this project's
+first priority.
 
 **No automated tests.** Every feature in this README was verified by hand
 against real webhook data — real verification, but not repeatable, and it
@@ -393,13 +413,17 @@ whole pipeline runs end-to-end with no API key and no cost.
 
 ## API
 
+All routes below live under `/api` (e.g. `/api/repos`) — kept separate from
+the root, which the frontend's client-side routing owns. `/health` is the
+one exception; see the [engineering log](#engineering-log) for why.
+
 ```
-POST /webhooks/github        GitHub webhook receiver (HMAC verified)
-GET  /repos                  List monitored repos
-GET  /repos/{id}/metrics     Health score, pass rate, flaky-build detection
-GET  /repos/{id}/runs        Build history
-GET  /runs/{id}               Single build detail
-GET  /runs/{id}/analysis      Claude failure analysis
-WS   /ws/{repo_id}           Live build updates
-GET  /health                  Health check
+POST /api/webhooks/github    GitHub webhook receiver (HMAC verified)
+GET  /api/repos              List monitored repos
+GET  /api/repos/{id}/metrics Health score, pass rate, flaky-build detection
+GET  /api/repos/{id}/runs    Build history
+GET  /api/runs/{id}          Single build detail
+GET  /api/runs/{id}/analysis Claude failure analysis
+WS   /api/ws/{repo_id}       Live build updates
+GET  /health                 Health check (unprefixed)
 ```
