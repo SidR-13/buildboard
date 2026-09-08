@@ -263,6 +263,21 @@ fallback so a direct load or refresh on `/repos/:id` still works. Tested
 the exact failure mode this fixes — a hard refresh on a deep link — before
 calling it done, not just the happy path from `/`.
 
+**Wiring the frontend into CI/CD needed a file-transfer path SSM doesn't
+have.** The backend's deploy step already worked over `ssm:SendCommand` —
+but that only runs shell commands on the instance, it can't push files to
+it. Getting the built frontend from a GitHub Actions runner onto EC2
+needed an intermediary, so I added a private S3 bucket: the workflow
+uploads the build there, then an SSM command tells the instance to pull
+it down with `aws s3 sync`. Split the single deploy job into a small
+dispatcher job (diffs the push, decides whether backend, frontend, or
+both actually changed) plus two independent jobs, so a frontend-only
+commit no longer rebuilds and redeploys the backend image for nothing.
+First real run failed twice before working — once on a bucket that
+didn't exist yet, once on a missing IAM grant for the GitHub Actions role
+— both fixed by reading the actual error rather than re-guessing the
+whole setup, same as every other AWS wall this project hit.
+
 ---
 
 ## Limitations & path to scale
@@ -270,14 +285,6 @@ calling it done, not just the happy path from `/`.
 This is a solid single-service vertical slice, built and operated by one
 person — it is not what a team-run version of this would look like. Listed
 roughly in the order each would actually bite:
-
-**Frontend deploy isn't automated.** The dashboard is live (see the top of
-this README), but getting it there was a manual `npm run build` + `scp`,
-not a step in the CI/CD pipeline — only backend changes trigger a deploy
-today. The mechanical parts (build, upload, swap the files under Nginx)
-are exactly the kind of thing that belongs in `deploy.yml` alongside the
-backend job; not done yet because backend automation was this project's
-first priority.
 
 **No automated tests.** Every feature in this README was verified by hand
 against real webhook data — real verification, but not repeatable, and it
@@ -373,7 +380,8 @@ over.
 | **ECR** | Private Docker image registry | Integrates with IAM directly — no separate registry credentials to manage or leak. Images are tagged by commit SHA, not just `:latest`, so a bad deploy has an exact rollback target. |
 | **IAM** — three separate identities | Access control | A CLI user scoped to EC2/RDS/ECR only (not `AdministratorAccess`); a separate EC2 instance role, ECR-read-only, so the server can pull images with zero credential files on disk; a separate GitHub Actions OIDC role, trusted only for this repo's `main` branch, permissioned for ECR push + one SSM command on one instance. None of the three can do what the other two can — a compromised GitHub Actions run can't touch RDS, and a compromised EC2 instance can't push new images to ECR. |
 | **Security groups** | Network boundary | EC2: port 22 open only to one IP (mine), 80/443 public. RDS: port 5432 open only to EC2's security group — never the public internet. Modeled as service-to-service trust, not "anything on the VPC can reach the database." |
-| **Systems Manager (SSM)** | Runs the deploy script on EC2 | Chosen specifically so port 22 could stay locked to one IP — GitHub's hosted runners connect from rotating ranges that a single-IP rule can't allow-list. `ssm:SendCommand` runs the deploy over an authenticated AWS API call through the instance's own IAM role instead, so there's no SSH key in GitHub Actions and no open port for it to use anyway. |
+| **Systems Manager (SSM)** | Runs the deploy scripts on EC2 | Chosen specifically so port 22 could stay locked to one IP — GitHub's hosted runners connect from rotating ranges that a single-IP rule can't allow-list. `ssm:SendCommand` runs each deploy over an authenticated AWS API call through the instance's own IAM role instead, so there's no SSH key in GitHub Actions and no open port for it to use anyway. |
+| **S3** (private bucket) | Transfer point for frontend deploys | SSM runs commands, not file transfers — this is how the built frontend actually gets from a GitHub Actions runner onto EC2. GitHub Actions can only write to it; the EC2 role can only read from it — neither side has more access than the one direction it needs. |
 | **Elastic IP** | Stable public address | EC2's default public IP changes on stop/start; DNS (below) needs something fixed to point at. |
 | **Nginx + Let's Encrypt (Certbot)** | TLS termination, reverse proxy | Free HTTPS, and one config file handles both the WebSocket upgrade headers and the HTTP→HTTPS redirect. An ALB + ACM certificate would do the same job for ~$16/month this project doesn't need to spend. |
 | **DuckDNS** | Domain name | Let's Encrypt can't issue a certificate for a bare IP — that's a protocol rule, not an AWS limitation. A free dynamic-DNS hostname was enough; buying a domain wasn't. |
